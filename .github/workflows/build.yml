@@ -265,8 +265,19 @@ jobs:
           NM_SRC="$RUNNER_TEMP/nomount-src/kernel/src"
           test -f "$NM_SRC/nomount.c" || { echo "::error::NoMount nomount.c missing in upstream"; exit 1; }
           grep -q '^config NOMOUNT' "$NM_SRC/Kconfig" || { echo "::error::NoMount Kconfig lacks NOMOUNT symbol"; exit 1; }
-          NOMOUNT_VER="$(grep -m1 '#define NOMOUNT_VERSION' "$NM_SRC/nomount.h" | awk -F'"' '{print $2}')"
-          [ -n "$NOMOUNT_VER" ] || { echo "::error::NoMount version not found in nomount.h"; exit 1; }
+          # Upstream replaced the plain NOMOUNT_VERSION string with
+          # NOMOUNT_BASE_VERSION plus a composed macro, so splitting the first
+          # matching line on quotes returns an empty string. Prefer the base
+          # version, fall back to a literal version, then to the commit.
+          NOMOUNT_VER="$(sed -n 's/^#define[[:space:]]\{1,\}NOMOUNT_BASE_VERSION[[:space:]]\{1,\}"\([^"]*\)".*/\1/p' "$NM_SRC/nomount.h" | head -1)"
+          if [ -z "$NOMOUNT_VER" ]; then
+            NOMOUNT_VER="$(sed -n 's/^#define[[:space:]]\{1,\}NOMOUNT_VERSION[[:space:]]\{1,\}"\([0-9][^"]*\)".*/\1/p' "$NM_SRC/nomount.h" | head -1)"
+          fi
+          if [ -z "$NOMOUNT_VER" ]; then
+            echo "::warning::NoMount version macro not found in nomount.h; falling back to the commit"
+            NOMOUNT_VER="git-$(git -C "$RUNNER_TEMP/nomount-src" rev-parse --short HEAD)"
+          fi
+          [[ "$NOMOUNT_VER" =~ ^[0-9A-Za-z._()-]+$ ]] || { echo "::error::Unparseable NoMount version: ${NOMOUNT_VER}"; exit 1; }
           mkdir -p fs/nomount
           cp "$NM_SRC/nomount.c" "$NM_SRC/nomount.h" "$NM_SRC/Kconfig" "$NM_SRC/Makefile" fs/nomount/
           grep -q 'obj-$(CONFIG_NOMOUNT) += nomount/' fs/Makefile || echo 'obj-$(CONFIG_NOMOUNT) += nomount/' >> fs/Makefile
