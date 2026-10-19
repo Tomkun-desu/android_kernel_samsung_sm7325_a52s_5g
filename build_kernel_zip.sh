@@ -92,113 +92,46 @@ else
     SOURCE_IMAGES_DIR="${IMAGES_ONEUI_DIR}"
 fi
 
-# ─── Detect root solution from current branch ─────────────────────────────────
-#
-# Rootless branches:
-#   main
-#   aosp
-#
-# KernelSU-Next branches:
-#   ksu-next
-#   ksu-next-susfs-aosp
-#   ksu-next-susfs-oneui
-#   ...and other ksu-next* variants
-#
-# ReSukiSU branches:
-#   resukisu-aosp
-#   resukisu-oneui
-#   resukisu-susfs-aosp
-#   resukisu-susfs-oneui
-#
-# KernelSU-Next lives in the "KernelSU-Next" submodule.
-# ReSukiSU lives in the "KernelSU" submodule.
-#
-# Both root solutions use the latest tag returned by:
-#   cd <submodule> && git tag -l
-#
-# The branch name is also used to determine whether SUSFS is enabled.
-ROOT_SOLUTION="none"
-ROOT_SUBMODULE_DIR=""
-ROOT_VERSION="none"
-ROOT_DISPLAY="none"
-HAS_SUSFS=false
+# Detect KSUN / SUSFS versions
+SUSFS_VERSION="$(grep '#define SUSFS_VERSION' "${KERNEL_ROOT}/include/linux/susfs.h" 2>/dev/null \
+    | awk '{print $3}' \
+    | tr -d '"' \
+    || echo 'unknown')"
 
-case "$CURRENT_BRANCH" in
-    main|aosp)
-        ROOT_SOLUTION="none"
-        ROOT_VERSION="none"
-        ROOT_DISPLAY="none"
-        ;;
+NO_KSU_BRANCHES=("main" "aosp")
 
-    ksu-next*)
-        ROOT_SOLUTION="KernelSU-Next"
-        ROOT_SUBMODULE_DIR="${KERNEL_ROOT}/KernelSU-Next"
-
-        if [[ "$CURRENT_BRANCH" == *susfs* ]]; then
-            HAS_SUSFS=true
-        fi
-        ;;
-
-    resukisu*)
-        ROOT_SOLUTION="ReSukiSU"
-        ROOT_SUBMODULE_DIR="${KERNEL_ROOT}/KernelSU"
-
-        if [[ "$CURRENT_BRANCH" == *susfs* ]]; then
-            HAS_SUSFS=true
-        fi
-        ;;
-
-    *)
-        warn "Branch '$CURRENT_BRANCH' doesn't match a known root solution — treating it as rootless"
-        ROOT_SOLUTION="none"
-        ROOT_VERSION="none"
-        ROOT_DISPLAY="none"
-        ;;
-esac
-
-# Detect root solution version from submodule tags.
-#
-# The requested behavior is equivalent to:
-#   cd KernelSU
-#   git tag -l
-#
-# and using the latest tag listed by git as the displayed version.
-if [[ "$ROOT_SOLUTION" != "none" ]]; then
-    [[ -d "$ROOT_SUBMODULE_DIR" ]] \
-        || die "${ROOT_SOLUTION} submodule directory not found: ${ROOT_SUBMODULE_DIR}"
-
-    mapfile -t ROOT_TAGS < <(git -C "$ROOT_SUBMODULE_DIR" tag -l)
-
-    if (( ${#ROOT_TAGS[@]} == 0 )); then
-        ROOT_VERSION="unknown"
-        warn "No tags found in ${ROOT_SOLUTION} submodule"
-    else
-        ROOT_VERSION="${ROOT_TAGS[$((${#ROOT_TAGS[@]} - 1))]}"
-    fi
-
-    ROOT_DISPLAY="${ROOT_SOLUTION} ${ROOT_VERSION}"
-
-    if [[ "$HAS_SUSFS" == true ]]; then
-        ROOT_DISPLAY+=" + SUSFS"
-    fi
+if [[ " ${NO_KSU_BRANCHES[*]} " == *" ${CURRENT_BRANCH} "* ]]; then
+    KSU_VERSION="none"
+else
+    KSU_VERSION="$(git -C "${KERNEL_ROOT}/KernelSU-Next" describe --tags --always 2>/dev/null \
+        || echo "git-$(git -C "${KERNEL_ROOT}/KernelSU-Next" rev-parse --short HEAD 2>/dev/null || echo unknown)")"
 fi
 
-# ZIP name
-if [[ "$ROOT_SOLUTION" == "none" ]]; then
+echo "KSUN_VERSION=${KSU_VERSION}"
+echo "SUSFS_VERSION=${SUSFS_VERSION}"
+
+# Display string for root solution
+if [[ "$KSU_VERSION" == "none" ]]; then
+    ROOT_DISPLAY="none"
+else
+    ROOT_DISPLAY="KSUN ${KSU_VERSION}"
+fi
+
+# ─── Generate zip name
+
+if [[ "$KSU_VERSION" == "none" ]]; then
     ZIP_NAME="${AUTHOR}_${BUILD_DATE}_${ROM_TYPE}_${DEVICE}.zip"
 else
-    ZIP_ROOT_NAME="${ROOT_SOLUTION//-/_}"
-    ZIP_ROOT_NAME="${ZIP_ROOT_NAME// /-}"
-    if [[ "$HAS_SUSFS" == true ]]; then
-        ZIP_NAME="${AUTHOR}_${BUILD_DATE}_${ROM_TYPE}_${ZIP_ROOT_NAME}-${ROOT_VERSION}_SUSFS_${DEVICE}.zip"
-    else
-        ZIP_NAME="${AUTHOR}_${BUILD_DATE}_${ROM_TYPE}_${ZIP_ROOT_NAME}-${ROOT_VERSION}_${DEVICE}.zip"
-    fi
+    ZIP_NAME="${AUTHOR}_${BUILD_DATE}_${ROM_TYPE}_KSUN-${KSU_VERSION}_SUSFS-${SUSFS_VERSION}_${DEVICE}.zip"
 fi
 
 # ─── Sanity checks ────────────────────────────────────────────────────────────
-[[ "$(basename "$KERNEL_ROOT")" == "android_kernel_samsung_sm7325_a52s_5g" ]] \
-    || die "Run this script from the kernel root (android_kernel_samsung_sm7325_a52s_5g/)"
+# A fork or mirror keeps the tree but not necessarily the directory name, so
+# accept any checkout that actually looks like this kernel.
+if [[ "$(basename "$KERNEL_ROOT")" != "android_kernel_samsung_sm7325_a52s_5g" ]]; then
+    [[ -f "$KERNEL_ROOT/Makefile" && -d "$KERNEL_ROOT/arch/arm64" ]] \
+        || die "Run this script from the kernel root (android_kernel_samsung_sm7325_a52s_5g/)"
+fi
 
 for cmd in curl unzip zip cpio find sed git uname tar grep nproc cp chmod depmod python3; do
     command -v "$cmd" &>/dev/null || die "Required command not found: $cmd"
@@ -244,9 +177,9 @@ check_dir  "${TEMPLATE_ZIP_DIR}/META-INF"         "Flashable zip META-INF dir"
 check_dir  "${KERNEL_ROOT}/firmware/tsp_stm"      "Firmware source dir"
 check_glob "${KERNEL_ROOT}/firmware/tsp_stm/fts5cu56a_a52sxq*" "TSP firmware file"
 
-# Root solution submodule
-if [[ "$ROOT_SOLUTION" != "none" ]]; then
-    check_dir "$ROOT_SUBMODULE_DIR" "${ROOT_SOLUTION} submodule"
+# KernelSU-Next submodule (only on KSU branches)
+if [[ "$KSU_VERSION" != "none" ]]; then
+    check_dir "${KERNEL_ROOT}/KernelSU-Next"      "KernelSU-Next submodule"
 fi
 
 # Kernel defconfig
