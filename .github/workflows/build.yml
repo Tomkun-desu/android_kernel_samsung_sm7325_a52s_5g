@@ -280,6 +280,24 @@ jobs:
           [[ "$NOMOUNT_VER" =~ ^[0-9A-Za-z._()-]+$ ]] || { echo "::error::Unparseable NoMount version: ${NOMOUNT_VER}"; exit 1; }
           mkdir -p fs/nomount
           cp "$NM_SRC/nomount.c" "$NM_SRC/nomount.h" "$NM_SRC/Kconfig" "$NM_SRC/Makefile" fs/nomount/
+
+          # Upstream's Makefile derives NOMOUNT_COMMIT_COUNT by walking up from
+          # fs/nomount to the nearest .git whose origin URL contains "nomount".
+          # Copied into the kernel tree that lookup finds the kernel repository
+          # instead, so the driver reported a bare "21" and two different
+          # upstream commits produced an identical version string. Resolve the
+          # real count here and hand it to the Makefile.
+          git -C "$RUNNER_TEMP/nomount-src" fetch --unshallow --tags 2>/dev/null || true
+          NOMOUNT_COUNT="$(git -C "$RUNNER_TEMP/nomount-src" rev-list --count HEAD)"
+          NOMOUNT_SHA="$(git -C "$RUNNER_TEMP/nomount-src" rev-parse --short=8 HEAD)"
+          [[ "$NOMOUNT_COUNT" =~ ^[0-9]+$ ]] || { echo "::error::Cannot resolve the NoMount commit count"; exit 1; }
+          awk -v n="$NOMOUNT_COUNT" '
+            /^NOMOUNT_COMMITS :=/ { print "NOMOUNT_COMMITS := " n; skip = 1; next }
+            skip == 1 { if ($0 ~ /\)[[:space:]]*$/) skip = 0; next }
+            { print }
+          ' fs/nomount/Makefile > fs/nomount/Makefile.nm
+          mv fs/nomount/Makefile.nm fs/nomount/Makefile
+          grep -q "^NOMOUNT_COMMITS := ${NOMOUNT_COUNT}$" fs/nomount/Makefile || { echo "::error::NoMount Makefile rewrite failed"; exit 1; }
           grep -q 'obj-$(CONFIG_NOMOUNT) += nomount/' fs/Makefile || echo 'obj-$(CONFIG_NOMOUNT) += nomount/' >> fs/Makefile
           if ! grep -q 'source "fs/nomount/Kconfig"' fs/Kconfig; then
             awk '/^endmenu$/ { last = NR } { lines[NR] = $0 } END { for (i = 1; i <= NR; i++) { if (i == last) print "source \"fs/nomount/Kconfig\""; print lines[i] } }' fs/Kconfig > fs/Kconfig.nomount
@@ -293,7 +311,9 @@ jobs:
           grep -q '^CONFIG_NOMOUNT=y' arch/arm64/configs/vendor/a52sxq_kor_single_defconfig || echo 'CONFIG_NOMOUNT=y' >> arch/arm64/configs/vendor/a52sxq_kor_single_defconfig
           echo "NOMOUNT_TIP=${NOMOUNT_TIP}" >> $GITHUB_ENV
           echo "NOMOUNT_VER=${NOMOUNT_VER}" >> $GITHUB_ENV
-          echo "NOMOUNT APPLIED: tip ${NOMOUNT_TIP} version ${NOMOUNT_VER}"
+          echo "NOMOUNT_COUNT=${NOMOUNT_COUNT}" >> $GITHUB_ENV
+          echo "NOMOUNT_SHA=${NOMOUNT_SHA}" >> $GITHUB_ENV
+          echo "NOMOUNT APPLIED: tip ${NOMOUNT_TIP} version ${NOMOUNT_VER} (${NOMOUNT_COUNT} commits, ${NOMOUNT_SHA})"
 
       - name: Apply Unicode bypass fix (WildKernels)
         if: ${{ inputs.use_unicode_fix == true }}
@@ -653,6 +673,8 @@ jobs:
             echo "SUSFS_TIP=${{ env.SUSFS_TIP }}"
             echo "NOMOUNT_TIP=${{ env.NOMOUNT_TIP }}"
             echo "NOMOUNT_VER=${{ env.NOMOUNT_VER }}"
+            echo "NOMOUNT_COUNT=${{ env.NOMOUNT_COUNT }}"
+            echo "NOMOUNT_SHA=${{ env.NOMOUNT_SHA }}"
             echo "BBG_TIP=${{ env.BBG_TIP }}"
           } > version-info/version.txt
 
