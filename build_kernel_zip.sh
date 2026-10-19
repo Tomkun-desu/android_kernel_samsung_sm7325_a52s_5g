@@ -126,8 +126,12 @@ else
 fi
 
 # ─── Sanity checks ────────────────────────────────────────────────────────────
-[[ "$(basename "$KERNEL_ROOT")" == "android_kernel_samsung_sm7325_a52s_5g" ]] \
-    || die "Run this script from the kernel root (android_kernel_samsung_sm7325_a52s_5g/)"
+# A fork or mirror keeps the tree but not necessarily the directory name, so
+# accept any checkout that actually looks like this kernel.
+if [[ "$(basename "$KERNEL_ROOT")" != "android_kernel_samsung_sm7325_a52s_5g" ]]; then
+    [[ -f "$KERNEL_ROOT/Makefile" && -d "$KERNEL_ROOT/arch/arm64" ]] \
+        || die "Run this script from the kernel root (android_kernel_samsung_sm7325_a52s_5g/)"
+fi
 
 for cmd in curl unzip zip cpio find sed git uname tar grep nproc cp chmod depmod python3; do
     command -v "$cmd" &>/dev/null || die "Required command not found: $cmd"
