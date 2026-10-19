@@ -100,11 +100,16 @@ SUSFS_VERSION="$(grep '#define SUSFS_VERSION' "${KERNEL_ROOT}/include/linux/susf
 
 NO_KSU_BRANCHES=("main" "aosp")
 
+# The root-solution submodule is KernelSU-Next on the older branches and plain
+# KernelSU on the BakaSU (ex-ReSukiSU) branches; resolve it once here.
+KSU_DIR="${KERNEL_ROOT}/KernelSU-Next"
+[[ -d "$KSU_DIR" ]] || KSU_DIR="${KERNEL_ROOT}/KernelSU"
+
 if [[ " ${NO_KSU_BRANCHES[*]} " == *" ${CURRENT_BRANCH} "* ]]; then
     KSU_VERSION="none"
 else
-    KSU_VERSION="$(git -C "${KERNEL_ROOT}/KernelSU-Next" describe --tags --always 2>/dev/null \
-        || echo "git-$(git -C "${KERNEL_ROOT}/KernelSU-Next" rev-parse --short HEAD 2>/dev/null || echo unknown)")"
+    KSU_VERSION="$(git -C "${KSU_DIR}" describe --tags --always 2>/dev/null \
+        || echo "git-$(git -C "${KSU_DIR}" rev-parse --short HEAD 2>/dev/null || echo unknown)")"
 fi
 
 echo "KSUN_VERSION=${KSU_VERSION}"
@@ -177,9 +182,9 @@ check_dir  "${TEMPLATE_ZIP_DIR}/META-INF"         "Flashable zip META-INF dir"
 check_dir  "${KERNEL_ROOT}/firmware/tsp_stm"      "Firmware source dir"
 check_glob "${KERNEL_ROOT}/firmware/tsp_stm/fts5cu56a_a52sxq*" "TSP firmware file"
 
-# KernelSU-Next submodule (only on KSU branches)
+# Root solution submodule (only on KSU branches)
 if [[ "$KSU_VERSION" != "none" ]]; then
-    check_dir "${KERNEL_ROOT}/KernelSU-Next"      "KernelSU-Next submodule"
+    check_dir "$KSU_DIR"                          "root solution submodule ($(basename "$KSU_DIR"))"
 fi
 
 # Kernel defconfig
