@@ -34,7 +34,7 @@ on:
         default: true
 
       pin_resukisu:
-        description: "Pin ReSukiSU SHA (empty = float to upstream tip)"
+        description: "Pin BakaSU (ex-ReSukiSU) SHA (empty = float to upstream tip)"
         required: false
         type: string
         default: ''
@@ -132,32 +132,57 @@ jobs:
           fetch-tags: true
           submodules: recursive
 
-      - name: Float ReSukiSU to upstream tip
+      - name: Float BakaSU (ex-ReSukiSU) to upstream tip
         run: |
           set -euo pipefail
-          RESUK_URL="https://github.com/ReSukiSU/ReSukiSU.git"
+          RESUK_URL="https://github.com/Baka-SU/BakaSU.git"
           RESUK_BRANCH="main"
+          # Upstream renamed ReSukiSU -> BakaSU and currently SUSPENDS the SUSFS
+          # kernel build until simonpunk's SUSFS matches the new KernelSU kernel
+          # API: at affected tips kernel/tools/susfs_compat.mk ends with an
+          # unconditional $(error). SUSFS legs therefore fall back to the last
+          # SHA we built green with SUSFS, and the guard retires itself as soon
+          # as upstream drops the marker.
+          SUSFS_SAFE_PIN="8770c7e324a22895703c4916b8a16520e0b81c79"
+          EXPLICIT_PIN=""
           if [ -n "${{ inputs.pin_resukisu }}" ]; then
             RESUK_TIP="${{ inputs.pin_resukisu }}"
-            echo "ReSukiSU pinned via input: ${RESUK_TIP}"
-            git -C KernelSU fetch origin --tags --unshallow 2>/dev/null || git -C KernelSU fetch origin --tags || { echo "::error::ReSukiSU fetch failed"; exit 1; }
+            EXPLICIT_PIN="1"
+            echo "BakaSU pinned via input: ${RESUK_TIP}"
+            git -C KernelSU fetch origin --tags --unshallow 2>/dev/null || git -C KernelSU fetch origin --tags || { echo "::error::BakaSU fetch failed"; exit 1; }
           else
             RESUK_TIP="$(git ls-remote "$RESUK_URL" "refs/heads/$RESUK_BRANCH" | awk '{print $1; exit}')"
-            echo "ReSukiSU floating to upstream tip: ${RESUK_TIP}"
-            git -C KernelSU fetch origin "$RESUK_BRANCH" --tags --unshallow 2>/dev/null || git -C KernelSU fetch origin "$RESUK_BRANCH" --tags || { echo "::error::ReSukiSU fetch failed"; exit 1; }
+            echo "BakaSU floating to upstream tip: ${RESUK_TIP}"
+            git -C KernelSU fetch origin "$RESUK_BRANCH" --tags --unshallow 2>/dev/null || git -C KernelSU fetch origin "$RESUK_BRANCH" --tags || { echo "::error::BakaSU fetch failed"; exit 1; }
             FETCHED="$(git -C KernelSU rev-parse FETCH_HEAD)"
             if [ "$FETCHED" != "$RESUK_TIP" ]; then
-              echo "::warning::ReSukiSU tip moved during fetch (resolved $RESUK_TIP, fetched $FETCHED); building fetched tip"
+              echo "::warning::BakaSU tip moved during fetch (resolved $RESUK_TIP, fetched $FETCHED); building fetched tip"
               RESUK_TIP="$FETCHED"
             fi
           fi
-          [[ "$RESUK_TIP" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Invalid ReSukiSU SHA: ${RESUK_TIP}"; exit 1; }
-          git -C KernelSU checkout "$RESUK_TIP" || { echo "::error::ReSukiSU checkout failed: ${RESUK_TIP}"; exit 1; }
-          [ "$(git -C KernelSU rev-parse HEAD)" = "$RESUK_TIP" ] || { echo "::error::ReSukiSU rev-parse mismatch"; exit 1; }
-          grep -q '^config KSU_SUSFS' KernelSU/kernel/Kconfig || { echo "::error::Floated ReSukiSU lacks KSU_SUSFS Kconfig symbols"; exit 1; }
+          [[ "$RESUK_TIP" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Invalid BakaSU SHA: ${RESUK_TIP}"; exit 1; }
+          SUSPENDED="0"
+          if [[ "${{ matrix.branch }}" == *susfs* ]] &&
+             git -C KernelSU cat-file -e "${RESUK_TIP}:kernel/tools/susfs_compat.mk" 2>/dev/null &&
+             git -C KernelSU show "${RESUK_TIP}:kernel/tools/susfs_compat.mk" | grep -qF '$(error Please wait susfs update'; then
+            SUSPENDED="1"
+          fi
+          if [ "$SUSPENDED" = "1" ]; then
+            if [ "$EXPLICIT_PIN" = "1" ]; then
+              echo "::error::Pinned BakaSU SHA ${RESUK_TIP} carries upstream's SUSFS suspend marker (kernel/tools/susfs_compat.mk); pin a pre-suspend SHA instead (last green SUSFS pin: ${SUSFS_SAFE_PIN})"
+              exit 1
+            fi
+            echo "::warning::BakaSU tip ${RESUK_TIP} suspends the SUSFS kernel build upstream; falling back to the last green SUSFS pin ${SUSFS_SAFE_PIN}"
+            RESUK_TIP="$SUSFS_SAFE_PIN"
+            RESUKISU_FALLBACK="true"
+          fi
+          git -C KernelSU checkout "$RESUK_TIP" || { echo "::error::BakaSU checkout failed: ${RESUK_TIP}"; exit 1; }
+          [ "$(git -C KernelSU rev-parse HEAD)" = "$RESUK_TIP" ] || { echo "::error::BakaSU rev-parse mismatch"; exit 1; }
+          grep -q '^config KSU_SUSFS' KernelSU/kernel/Kconfig || { echo "::error::Floated BakaSU lacks KSU_SUSFS Kconfig symbols"; exit 1; }
           git config submodule.KernelSU.update none
           echo "RESUKISU_PIN=${RESUK_TIP}" >> $GITHUB_ENV
-          echo "ReSukiSU now at $(git -C KernelSU rev-parse --short HEAD) $(git -C KernelSU describe --tags --always 2>/dev/null || true)"
+          echo "RESUKISU_FALLBACK=${RESUKISU_FALLBACK:-false}" >> "$GITHUB_ENV"
+          echo "BakaSU now at $(git -C KernelSU rev-parse --short HEAD) $(git -C KernelSU describe --tags --always 2>/dev/null || true) (fallback=${RESUKISU_FALLBACK:-false})"
 
       - name: Float SUSFS (fresh tip + maintained port)
         if: contains(matrix.branch, 'susfs')
@@ -457,10 +482,10 @@ jobs:
           set -e
 
           # Select the root-solution submodule dir from the matrix branch:
-          # resukisu* branches ship ReSukiSU in KernelSU/ (only family left).
+          # resukisu* branches ship BakaSU (ex-ReSukiSU) in KernelSU/ (only family left).
           if [[ "${{ matrix.branch }}" == resukisu* ]]; then
             KSU_DIR="KernelSU"
-            ROOT_NAME="ReSukiSU"
+            ROOT_NAME="BakaSU"
           else
             KSU_DIR="KernelSU-Next"
             ROOT_NAME="KSUN"
@@ -484,6 +509,7 @@ jobs:
           echo "ROOT_NAME=${ROOT_NAME}" >> $GITHUB_ENV
           echo "KERNEL_COMMIT=${COMMIT}" >> $GITHUB_ENV
           echo "RESUKISU_PIN=${RESUKISU_PIN:-unknown}" >> $GITHUB_ENV
+          echo "RESUKISU_FALLBACK=${RESUKISU_FALLBACK:-false}" >> $GITHUB_ENV
           echo "SUSFS_TIP=${SUSFS_TIP:-none}" >> $GITHUB_ENV
           echo "NOMOUNT_TIP=${NOMOUNT_TIP:-none}" >> $GITHUB_ENV
           echo "NOMOUNT_VER=${NOMOUNT_VER:-unknown}" >> $GITHUB_ENV
@@ -493,7 +519,7 @@ jobs:
           echo "========== VERSION INFO =========="
           echo "${ROOT_NAME}: ${KSU_VER:-unknown}"
           echo "SUSFS: ${SUSFS_VER:-unknown}"
-          echo "ReSukiSU pin: ${RESUKISU_PIN:-unknown}"
+          echo "BakaSU pin: ${RESUKISU_PIN:-unknown} (fallback=${RESUKISU_FALLBACK:-false})"
           echo "SUSFS tip: ${SUSFS_TIP:-none}"
           echo "NoMount tip: ${NOMOUNT_TIP:-none} version: ${NOMOUNT_VER:-unknown}"
           echo "Unicode tip: ${UNICODE_TIP:-none}"
@@ -594,6 +620,7 @@ jobs:
             echo "ROOT_NAME=${{ env.ROOT_NAME }}"
             echo "COMMIT=${{ env.KERNEL_COMMIT }}"
             echo "RESUKISU_PIN=${{ env.RESUKISU_PIN }}"
+            echo "RESUKISU_FALLBACK=${{ env.RESUKISU_FALLBACK }}"
             echo "SUSFS_TIP=${{ env.SUSFS_TIP }}"
             echo "NOMOUNT_TIP=${{ env.NOMOUNT_TIP }}"
             echo "NOMOUNT_VER=${{ env.NOMOUNT_VER }}"
@@ -621,7 +648,8 @@ jobs:
             echo "| Commit | ${{ env.KERNEL_COMMIT }} |"
             echo "| ${{ env.ROOT_NAME }} | ${{ env.KSU_VER }} |"
             echo "| SUSFS | ${{ env.SUSFS_VER }} |"
-            echo "| ReSukiSU pin | ${{ env.RESUKISU_PIN }} |"
+            echo "| BakaSU pin | ${{ env.RESUKISU_PIN }} |"
+            echo "| SUSFS pin fallback | ${{ env.RESUKISU_FALLBACK }} |"
             echo "| SUSFS tip | ${{ env.SUSFS_TIP }} |"
             echo "| NoMount | ${{ env.NOMOUNT_VER }} |"
             echo "| NoMount tip | ${{ env.NOMOUNT_TIP }} |"
@@ -656,14 +684,15 @@ jobs:
           echo "KSU_VER=${KSU_VER:-unknown}" >> $GITHUB_ENV
           echo "SUSFS_VER=${SUSFS_VER:-unknown}" >> $GITHUB_ENV
           echo "RESUKISU_PIN=${RESUKISU_PIN:-unknown}" >> $GITHUB_ENV
+          echo "RESUKISU_FALLBACK=${RESUKISU_FALLBACK:-false}" >> $GITHUB_ENV
           echo "SUSFS_TIP=${SUSFS_TIP:-none}" >> $GITHUB_ENV
           echo "NOMOUNT_TIP=${NOMOUNT_TIP:-none}" >> $GITHUB_ENV
           echo "NOMOUNT_VER=${NOMOUNT_VER:-unknown}" >> $GITHUB_ENV
           echo "BBG_TIP=${BBG_TIP:-none}" >> $GITHUB_ENV
 
           # Solution-aware release label derived from the selected branches:
-          # Only resukisu* branches remain, so the release is always ReSukiSU.
-          ROOT_NAME="ReSukiSU"
+          # Only resukisu* branches remain, so the release is always BakaSU.
+          ROOT_NAME="BakaSU"
           echo "ROOT_NAME=${ROOT_NAME}" >> $GITHUB_ENV
 
       - name: Prepare release info
@@ -689,8 +718,11 @@ jobs:
             echo "${{ env.ROOT_NAME }}:"
             echo "${{ env.KSU_VER }}"
             echo ""
-            echo "ReSukiSU pin:"
+            echo "BakaSU pin:"
             echo "${{ env.RESUKISU_PIN }}"
+            echo ""
+            echo "SUSFS pin fallback:"
+            echo "${{ env.RESUKISU_FALLBACK }}"
             echo ""
             echo "SUSFS:"
             echo "${{ env.SUSFS_VER }}"
