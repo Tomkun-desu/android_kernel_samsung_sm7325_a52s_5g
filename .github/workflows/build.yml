@@ -457,9 +457,27 @@ jobs:
 
           mkdir -p toolchain
 
-          curl -L \
-            https://github.com/${{ github.repository }}/releases/download/toolchain-r530567/clang-r530567-linux-x86.tar.gz \
-            -o clang.tar.gz
+          # Forks and mirrors do not inherit releases from upstream, so fall
+          # back to the canonical repository before giving up. gzip -t rejects
+          # the HTML/JSON error bodies GitHub serves for a missing asset.
+          ASSET="clang-r530567-linux-x86.tar.gz"
+          TAG="toolchain-r530567"
+          REPOS=("${{ github.repository }}" "Tomkun-desu/android_kernel_samsung_sm7325_a52s_5g")
+          have=0
+          for repo in "${REPOS[@]}"; do
+            url="https://github.com/${repo}/releases/download/${TAG}/${ASSET}"
+            code=$(curl -sSL -o clang.tar.gz -w '%{http_code}' "$url" || true)
+            if [ "$code" = "200" ] && gzip -t clang.tar.gz 2>/dev/null; then
+              echo "toolchain: ${repo} ${TAG}/${ASSET} (${code})"
+              have=1
+              break
+            fi
+            echo "::warning::toolchain missing at ${url} (HTTP ${code})"
+          done
+          if [ "$have" != "1" ]; then
+            echo "::error::no usable clang toolchain asset in: ${REPOS[*]}"
+            exit 1
+          fi
 
           tar -xzf clang.tar.gz -C toolchain
 
