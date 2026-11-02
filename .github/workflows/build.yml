@@ -139,13 +139,12 @@ jobs:
           RESUK_BRANCH="main"
           # Upstream renamed ReSukiSU -> BakaSU. When its kernel API moves ahead
           # of simonpunk's SUSFS, `main` carries an unconditional $(error) marker
-          # in kernel/tools/susfs_compat.mk, and upstream tracks the matching
-          # SUSFS sync on a side branch (today: sync-susfs) while main stays
-          # suspended. SUSFS legs therefore follow that branch while it exists
-          # and is marker-free, so every build still lands on the newest upstream
-          # code instead of a frozen SHA. The frozen SHA is only the last resort.
+          # in kernel/tools/susfs_compat.mk and the SUSFS legs walk back to the
+          # newest marker-free commit on main. Upstream has no stable side branch
+          # for that sync (sync-susfs was deleted), so main is the only ref we
+          # track; the frozen SHA is the last resort.
           SUSFS_SAFE_PIN="8770c7e324a22895703c4916b8a16520e0b81c79"
-          SUSFS_SYNC_BRANCH="sync-susfs"
+          SUSFS_SYNC_BRANCH="main"
           RESUK_SOURCE=""
           MARKER='$(error Please wait susfs update'
           EXPLICIT_PIN=""
