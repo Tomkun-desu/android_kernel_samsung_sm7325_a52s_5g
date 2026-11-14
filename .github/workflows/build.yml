@@ -27,6 +27,18 @@ on:
         type: boolean
         default: false
 
+      build_ksu_aosp:
+        description: "Build ksu-aosp (backslashxx/KernelSU)"
+        required: false
+        type: boolean
+        default: false
+
+      build_ksu_oneui:
+        description: "Build ksu-oneui (backslashxx/KernelSU)"
+        required: false
+        type: boolean
+        default: false
+
       create_release:
         description: "Create GitHub Release"
         required: false
@@ -35,6 +47,12 @@ on:
 
       pin_resukisu:
         description: "Pin BakaSU (ex-ReSukiSU) SHA (empty = float to upstream tip)"
+        required: false
+        type: string
+        default: ''
+
+      pin_ksu:
+        description: "Pin backslashxx/KernelSU SHA (empty = float to upstream tip)"
         required: false
         type: string
         default: ''
@@ -106,6 +124,8 @@ jobs:
           [ "${{ inputs.build_resukisu_oneui }}" = "true" ] && branches+=("resukisu-oneui")
           [ "${{ inputs.build_resukisu_susfs_aosp }}" = "true" ] && branches+=("resukisu-susfs-aosp")
           [ "${{ inputs.build_resukisu_susfs_oneui }}" = "true" ] && branches+=("resukisu-susfs-oneui")
+          [ "${{ inputs.build_ksu_aosp }}" = "true" ] && branches+=("ksu-aosp")
+          [ "${{ inputs.build_ksu_oneui }}" = "true" ] && branches+=("ksu-oneui")
 
           if [ ${#branches[@]} -eq 0 ]; then
             echo "No branch selected"
@@ -133,6 +153,7 @@ jobs:
           submodules: recursive
 
       - name: Float BakaSU (ex-ReSukiSU) to upstream tip
+        if: startsWith(matrix.branch, 'resukisu')
         run: |
           set -euo pipefail
           RESUK_URL="https://github.com/Baka-SU/BakaSU.git"
@@ -216,6 +237,7 @@ jobs:
           echo "BakaSU now at $(git -C KernelSU rev-parse --short HEAD) $(git -C KernelSU describe --tags --always 2>/dev/null || true) (source=${RESUK_SOURCE} fallback=${RESUKISU_FALLBACK:-false})"
 
       - name: Route the priority uid filter supercall (BakaSU)
+        if: startsWith(matrix.branch, 'resukisu')
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -265,6 +287,35 @@ jobs:
           grep -q '^config KSU_SUSFS_PRIORITY_UID_FILTER' KernelSU/kernel/Kconfig || { echo "::error::BakaSU Kconfig symbol not added"; exit 1; }
           grep -q 'case CMD_SUSFS_SET_PRIORITY_UID_FILTER' KernelSU/kernel/supercall/dispatch.c || { echo "::error::BakaSU dispatch route not added"; exit 1; }
           echo "priority uid filter supercall routed to susfs_set_priority_uid_filter()"
+
+      - name: Float KernelSU (backslashxx) to upstream tip
+        if: startsWith(matrix.branch, 'ksu')
+        run: |
+          set -euo pipefail
+          KSU_URL="https://github.com/backslashxx/KernelSU.git"
+          KSU_BRANCH="master"
+          if [ -n "${{ inputs.pin_ksu }}" ]; then
+            KSU_TIP="${{ inputs.pin_ksu }}"
+            echo "KernelSU pinned via input: ${KSU_TIP}"
+            git -C KernelSU fetch origin --tags --unshallow 2>/dev/null || git -C KernelSU fetch origin --tags || { echo "::error::KernelSU fetch failed"; exit 1; }
+          else
+            KSU_TIP="$(git ls-remote "$KSU_URL" "refs/heads/$KSU_BRANCH" | awk '{print $1; exit}')"
+            [ -n "$KSU_TIP" ] || { echo "::error::Could not resolve backslashxx/KernelSU ${KSU_BRANCH}"; exit 1; }
+            echo "KernelSU floating to upstream tip: ${KSU_TIP}"
+            git -C KernelSU fetch origin "$KSU_BRANCH" --tags --unshallow 2>/dev/null || git -C KernelSU fetch origin "$KSU_BRANCH" --tags || { echo "::error::KernelSU fetch failed"; exit 1; }
+            FETCHED="$(git -C KernelSU rev-parse FETCH_HEAD)"
+            if [ "$FETCHED" != "$KSU_TIP" ]; then
+              echo "::warning::KernelSU tip moved during fetch (resolved $KSU_TIP, fetched $FETCHED); building fetched tip"
+              KSU_TIP="$FETCHED"
+            fi
+          fi
+          [[ "$KSU_TIP" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Invalid KernelSU SHA: ${KSU_TIP}"; exit 1; }
+          git -C KernelSU checkout -q "$KSU_TIP" || { echo "::error::KernelSU checkout failed: ${KSU_TIP}"; exit 1; }
+          [ "$(git -C KernelSU rev-parse HEAD)" = "$KSU_TIP" ] || { echo "::error::KernelSU rev-parse mismatch"; exit 1; }
+          grep -qE '^config KSU[[:space:]]*$' KernelSU/kernel/Kconfig || { echo "::error::Floated KernelSU is not the classic KSU kernel"; exit 1; }
+          git config submodule.KernelSU.update none
+          echo "KSU_PIN=${KSU_TIP}" >> $GITHUB_ENV
+          echo "KernelSU now at $(git -C KernelSU rev-parse --short HEAD) $(git -C KernelSU describe --tags --always 2>/dev/null || true)"
 
       - name: Float SUSFS (fresh tip + maintained port)
         if: contains(matrix.branch, 'susfs')
@@ -626,6 +677,9 @@ jobs:
           if [[ "${{ matrix.branch }}" == resukisu* ]]; then
             KSU_DIR="KernelSU"
             ROOT_NAME="BakaSU"
+          elif [[ "${{ matrix.branch }}" == ksu-* ]]; then
+            KSU_DIR="KernelSU"
+            ROOT_NAME="KernelSU"
           else
             KSU_DIR="KernelSU-Next"
             ROOT_NAME="KSUN"
@@ -697,6 +751,10 @@ jobs:
           if [[ "${{ matrix.branch }}" == *susfs* ]]; then
             grep -q '^CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER=y' out/.config \
               || { echo "::error::${{ matrix.branch }} requires CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER=y but it is not set"; grep -n 'PRIORITY_UID_FILTER' out/.config || true; exit 1; }
+          fi
+          if [[ "${{ matrix.branch }}" == ksu-* ]]; then
+            grep -q '^CONFIG_KSU=y' out/.config \
+              || { echo "::error::${{ matrix.branch }} requires CONFIG_KSU=y but it is not set"; grep -n '^CONFIG_KSU' out/.config || true; exit 1; }
           fi
           echo "SUSFS config check passed for branch ${{ matrix.branch }}"
 
@@ -839,9 +897,15 @@ jobs:
           echo "NOMOUNT_VER=${NOMOUNT_VER:-unknown}" >> $GITHUB_ENV
           echo "BBG_TIP=${BBG_TIP:-none}" >> $GITHUB_ENV
 
-          # Solution-aware release label derived from the selected branches:
-          # Only resukisu* branches remain, so the release is always BakaSU.
+          # Solution-aware release label derived from the selected branches.
           ROOT_NAME="BakaSU"
+          if echo '${{ needs.prepare.outputs.branches }}' | jq -e 'any(.[]; startswith("ksu-"))' > /dev/null; then
+            if echo '${{ needs.prepare.outputs.branches }}' | jq -e 'any(.[]; startswith("resukisu"))' > /dev/null; then
+              ROOT_NAME="BakaSU+KernelSU"
+            else
+              ROOT_NAME="KernelSU"
+            fi
+          fi
           echo "ROOT_NAME=${ROOT_NAME}" >> $GITHUB_ENV
 
       - name: Prepare release info
