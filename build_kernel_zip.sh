@@ -113,11 +113,14 @@ else
 fi
 
 echo "KSUN_VERSION=${KSU_VERSION}"
+if [[ "$CURRENT_BRANCH" == ksu-* ]]; then ROOT_TAG="KernelSU"; else ROOT_TAG="KSUN"; fi
 echo "SUSFS_VERSION=${SUSFS_VERSION}"
 
 # Display string for root solution
 if [[ "$KSU_VERSION" == "none" ]]; then
     ROOT_DISPLAY="none"
+elif [[ "$CURRENT_BRANCH" == ksu-* ]]; then
+    ROOT_DISPLAY="KernelSU ${KSU_VERSION}"
 else
     ROOT_DISPLAY="KSUN ${KSU_VERSION}"
 fi
@@ -127,7 +130,7 @@ fi
 if [[ "$KSU_VERSION" == "none" ]]; then
     ZIP_NAME="${AUTHOR}_${BUILD_DATE}_${ROM_TYPE}_${DEVICE}.zip"
 else
-    ZIP_NAME="${AUTHOR}_${BUILD_DATE}_${ROM_TYPE}_KSUN-${KSU_VERSION}_SUSFS-${SUSFS_VERSION}_${DEVICE}.zip"
+    ZIP_NAME="${AUTHOR}_${BUILD_DATE}_${ROM_TYPE}_${ROOT_TAG}-${KSU_VERSION}_SUSFS-${SUSFS_VERSION}_${DEVICE}.zip"
 fi
 
 # ─── Sanity checks ────────────────────────────────────────────────────────────
