@@ -25,40 +25,6 @@ index 925bddb3e..f930f56b3 100755
  #include <linux/task_integrity.h>
  
  #include <linux/uaccess.h>
-@@ -1765,6 +1768,15 @@ static int exec_binprm(struct linux_binprm *bprm)
- /*
-  * sys_execve() executes a new program.
-  */
-+#ifdef CONFIG_KSU_SUSFS
-+extern struct static_key_true ksu_su_compat_enabled;
-+extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;
-+extern bool __ksu_is_allow_uid_for_current(uid_t uid);
-+extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv,
-+			void *envp, int *flags);
-+extern int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr, void *argv,
-+				void *envp, int *flags);
-+#endif
- static int __do_execve_file(int fd, struct filename *filename,
- 			    struct user_arg_ptr argv,
- 			    struct user_arg_ptr envp,
-@@ -1777,6 +1789,17 @@ static int __do_execve_file(int fd, struct filename *filename,
- 
- 	if (IS_ERR(filename))
- 		return PTR_ERR(filename);
-+#ifdef CONFIG_KSU_SUSFS
-+	if (likely(susfs_is_current_proc_no_su()))
-+		goto orig_flow;
-+	if (static_branch_likely(&ksu_su_compat_enabled)) {
-+		if (static_branch_unlikely(&susfs_is_sdcard_android_data_not_decrypted))
-+		ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);
-+	else
-+		ksu_handle_execveat_sucompat(&fd, &filename, &argv, &envp, &flags);
-+	}
-+orig_flow:
-+#endif
- 
- 	/*
- 	 * We move the actual failure in case of RLIMIT_NPROC excess from
 @@ -1934,22 +1957,11 @@ out_ret:
  	return retval;
  }
@@ -1021,19 +987,6 @@ index c8124b678..a5fd66a0d 100755
  
  #include "internal.h"
  
-@@ -349,6 +352,12 @@ SYSCALL_DEFINE4(fallocate, int, fd, int, mode, loff_t, offset, loff_t, len)
-  * We do this by temporarily clearing all FS-related capabilities and
-  * switching the fsuid/fsgid around to the real ones.
-  */
-+#ifdef CONFIG_KSU_SUSFS
-+extern struct static_key_true ksu_su_compat_enabled;
-+extern bool __ksu_is_allow_uid_for_current(uid_t uid);
-+extern int ksu_handle_faccessat(int *dfd, struct filename **filename, int *mode,
-+			int *flags);
-+#endif
- long do_faccessat(int dfd, const char __user *filename, int mode)
- {
- 	const struct cred *old_cred;
 @@ -358,6 +367,10 @@ long do_faccessat(int dfd, const char __user *filename, int mode)
  	int res;
  	unsigned int lookup_flags = LOOKUP_FOLLOW;
@@ -1044,30 +997,6 @@ index c8124b678..a5fd66a0d 100755
 +
  	if (mode & ~S_IRWXO)	/* where's F_OK, X_OK, W_OK, R_OK? */
  		return -EINVAL;
- 
-@@ -399,7 +412,23 @@ long do_faccessat(int dfd, const char __user *filename, int mode)
- 
- 	old_cred = override_creds(override_cred);
- retry:
-+#ifdef CONFIG_KSU_SUSFS
-+	fname = getname_flags(filename, lookup_flags, NULL);
-+
-+	if (likely(susfs_is_current_proc_no_su()))
-+		goto orig_flow;
-+
-+	if (static_branch_likely(&ksu_su_compat_enabled)) {
-+		if (unlikely(__ksu_is_allow_uid_for_current(current_uid().val)))
-+			ksu_handle_faccessat(&dfd, &fname, &mode, NULL);
-+	}
-+
-+orig_flow:
-+	res = filename_lookup(dfd, fname, lookup_flags, &path, NULL);
-+	// no putname(fname) here as filename_lookup() has it done for us already;
-+#else
- 	res = user_path_at(dfd, filename, lookup_flags, &path);
-+#endif
- 	if (res)
- 		goto out;
  
 @@ -444,19 +473,8 @@ out:
  	return res;
@@ -2133,19 +2062,6 @@ index 3c948c044..4fb5937cd 100755
  
  	generic_fillattr(inode, stat);
  	return 0;
-@@ -165,6 +231,12 @@ EXPORT_SYMBOL(vfs_statx_fd);
-  *
-  * 0 will be returned on success, and a -ve error code if unsuccessful.
-  */
-+#ifdef CONFIG_KSU_SUSFS
-+extern struct static_key_true ksu_su_compat_enabled;
-+extern bool __ksu_is_allow_uid_for_current(uid_t uid);
-+extern int ksu_handle_stat(int *dfd, struct filename **filename, int *flags);
-+#endif
-+
- int vfs_statx(int dfd, const char __user *filename, int flags,
- 	      struct kstat *stat, u32 request_mask)
- {
 @@ -172,6 +244,10 @@ int vfs_statx(int dfd, const char __user *filename, int flags,
  	int error = -EINVAL;
  	unsigned int lookup_flags = LOOKUP_FOLLOW | LOOKUP_AUTOMOUNT;
@@ -2157,30 +2073,6 @@ index 3c948c044..4fb5937cd 100755
  	if ((flags & ~(AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT |
  		       AT_EMPTY_PATH | KSTAT_QUERY_FLAGS)) != 0)
  		return -EINVAL;
-@@ -184,7 +260,23 @@ int vfs_statx(int dfd, const char __user *filename, int flags,
- 		lookup_flags |= LOOKUP_EMPTY;
- 
- retry:
-+#ifdef CONFIG_KSU_SUSFS
-+	fname = getname_flags(filename, lookup_flags, NULL);
-+
-+	if (likely(susfs_is_current_proc_no_su()))
-+		goto orig_flow;
-+
-+	if (static_branch_likely(&ksu_su_compat_enabled)) {
-+		if (unlikely(__ksu_is_allow_uid_for_current(current_uid().val)))
-+			ksu_handle_stat(&dfd, &fname, &flags);
-+	}
-+
-+orig_flow:
-+	error = filename_lookup(dfd, fname, lookup_flags, &path, NULL);
-+	// no putname(fname) here as filename_lookup() has it done for us already;
-+#else
- 	error = user_path_at(dfd, filename, lookup_flags, &path);
-+#endif
- 	if (error)
- 		goto out;
- 
 @@ -357,17 +449,6 @@ SYSCALL_DEFINE2(newlstat, const char __user *, filename,
  	return cp_new_stat(&stat, statbuf);
  }
@@ -2471,23 +2363,6 @@ index d8a156e39..8c642d79e 100755
  extern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg);
  #endif
  
-@@ -326,11 +325,13 @@ SYSCALL_DEFINE4(reboot, int, magic1, int, magic2, unsigned int, cmd,
- 	struct pid_namespace *pid_ns = task_active_pid_ns(current);
- 	char buffer[256];
- 	int ret = 0;
--
--#ifdef CONFIG_KSU_MANUAL_HOOK
--	ksu_handle_sys_reboot(magic1, magic2, cmd, &arg);
-+#ifdef CONFIG_KSU_SUSFS
-+    if (system_state == SYSTEM_RUNNING) {
-+        ksu_handle_sys_reboot(magic1, magic2, cmd, &arg);
-+    }
- #endif
- 
-+
- 	/* We only trust the superuser with rebooting the system. */
- 	if (!ns_capable(pid_ns->user_ns, CAP_SYS_BOOT))
- 		return -EPERM;
 diff --git a/kernel/sys.c b/kernel/sys.c
 index 1e605bdc0..4e1e187fd 100755
 --- a/kernel/sys.c
@@ -2513,25 +2388,6 @@ index 1e605bdc0..4e1e187fd 100755
  	kruid = make_kuid(ns, ruid);
  	keuid = make_kuid(ns, euid);
  	ksuid = make_kuid(ns, suid);
-@@ -698,8 +691,18 @@ error:
- 	return retval;
- }
- 
-+#ifdef CONFIG_KSU
-+extern int ksu_handle_setresuid(uid_t ruid, uid_t euid, uid_t suid);
-+#endif
-+
- SYSCALL_DEFINE3(setresuid, uid_t, ruid, uid_t, euid, uid_t, suid)
- {
-+#ifdef CONFIG_KSU_SUSFS
-+	if (ksu_handle_setresuid(ruid, euid, suid)) {
-+		pr_info("Something wrong with ksu_handle_setresuid()\\n");
-+	}
-+#endif
-+
- 	return __sys_setresuid(ruid, euid, suid);
- }
- 
 @@ -1261,12 +1264,20 @@ static int override_release(char __user *release, size_t len)
  	return ret;
  }
