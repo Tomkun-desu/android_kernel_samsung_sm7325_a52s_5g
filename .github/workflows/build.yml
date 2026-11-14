@@ -215,6 +215,57 @@ jobs:
           echo "RESUKISU_SOURCE=${RESUK_SOURCE}" >> "$GITHUB_ENV"
           echo "BakaSU now at $(git -C KernelSU rev-parse --short HEAD) $(git -C KernelSU describe --tags --always 2>/dev/null || true) (source=${RESUK_SOURCE} fallback=${RESUKISU_FALLBACK:-false})"
 
+      - name: Route the priority uid filter supercall (BakaSU)
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import io
+
+          kconfig = "KernelSU/kernel/Kconfig"
+          s = open(kconfig).read()
+          if "config KSU_SUSFS_PRIORITY_UID_FILTER" not in s:
+              anchor = "\nendmenu\n\nendmenu\n"
+              assert s.count(anchor) == 1, "Kconfig anchor changed"
+              block = (
+                  "\nconfig KSU_SUSFS_PRIORITY_UID_FILTER\n"
+                  '    bool "Enable hiding the uids of the user-defined apps from getpriority/setpriority"\n'
+                  "    depends on KSU_SUSFS\n"
+                  "    default y\n"
+                  "    help\n"
+                  "        - Allow hiding the uids of the user-defined apps from the apps that\n"
+                  "          abuse the getpriority/setpriority/ioprio syscalls.\n"
+                  "        - The uids are resolved from the app data paths, hence they are always up to date.\n"
+                  "        - Effective only for all processes with uid >= 10000.\n"
+              )
+              s = s.replace(anchor, block + anchor)
+              open(kconfig, "w").write(s)
+
+          dispatch = "KernelSU/kernel/supercall/dispatch.c"
+          s = open(dispatch).read()
+          if "CMD_SUSFS_SET_PRIORITY_UID_FILTER" not in s:
+              anchor = "#ifdef CONFIG_KSU_SUSFS\nint ksu_handle_susfs_cmd("
+              assert s.count(anchor) == 1, "dispatch anchor changed"
+              s = s.replace(anchor,
+                  "#ifdef CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER\n"
+                  "extern void susfs_set_priority_uid_filter(void __user **user_info);\n"
+                  "#endif // #ifdef CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER\n"
+                  + anchor)
+              case_anchor = "    case CMD_SUSFS_ENABLE_AVC_LOG_SPOOFING: {"
+              assert s.count(case_anchor) == 1, "dispatch case anchor changed"
+              s = s.replace(case_anchor,
+                  "#ifdef CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER\n"
+                  "    case CMD_SUSFS_SET_PRIORITY_UID_FILTER: {\n"
+                  "        susfs_set_priority_uid_filter(arg);\n"
+                  "        return 0;\n"
+                  "    }\n"
+                  "#endif // #ifdef CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER\n"
+                  + case_anchor)
+              open(dispatch, "w").write(s)
+          PY
+          grep -q '^config KSU_SUSFS_PRIORITY_UID_FILTER' KernelSU/kernel/Kconfig || { echo "::error::BakaSU Kconfig symbol not added"; exit 1; }
+          grep -q 'case CMD_SUSFS_SET_PRIORITY_UID_FILTER' KernelSU/kernel/supercall/dispatch.c || { echo "::error::BakaSU dispatch route not added"; exit 1; }
+          echo "priority uid filter supercall routed to susfs_set_priority_uid_filter()"
+
       - name: Float SUSFS (fresh tip + maintained port)
         if: contains(matrix.branch, 'susfs')
         run: |
@@ -247,7 +298,7 @@ jobs:
           SUSFS_VER="$(grep -m1 '#define SUSFS_VERSION' "$PATCH_ABS" | awk -F'"' '{print $2}')"
           [ -n "$SUSFS_VER" ] || { echo "::error::SUSFS version not found in patch"; exit 1; }
           git fetch origin main --depth=1 || true
-          for f in integration.patch samsung-delta.patch susfs-defconfig.patch; do
+          for f in integration.patch samsung-delta.patch susfs-defconfig.patch priority-uid-filter-defer.patch priority-uid-filter-hooks.patch; do
             git show "origin/main:.github/susfs/maintained/$f" > "$RUNNER_TEMP/$f" || { echo "::error::Maintained $f missing on origin/main"; exit 1; }
             test -s "$RUNNER_TEMP/$f" || { echo "::error::Maintained $f empty"; exit 1; }
           done
@@ -258,12 +309,21 @@ jobs:
             mkdir -p "$(dirname "$f")"
             cp "$FRESH/$f" "$f"
           done
+          git apply --check "$RUNNER_TEMP/priority-uid-filter-defer.patch" || { echo "::error::Priority uid filter defer does not apply on fresh SUSFS tip ${SUSFS_TIP}"; exit 1; }
+          git apply "$RUNNER_TEMP/priority-uid-filter-defer.patch"
+          [ "$(grep -c 'susfs_parse_priority_app_names(info->app_strings' fs/susfs.c)" = "0" ] || { echo "::error::Priority uid filter still resolves the uids inline in the syscall hook"; exit 1; }
+          [ "$(grep -c 'schedule_work(&susfs_priority_app_strings_work)' fs/susfs.c)" = "1" ] || { echo "::error::Priority uid filter workqueue kick missing"; exit 1; }
           git apply --check "$RUNNER_TEMP/samsung-delta.patch" || { echo "::error::Samsung delta does not apply on fresh SUSFS tip ${SUSFS_TIP} - delta needs refresh"; exit 1; }
           git apply "$RUNNER_TEMP/samsung-delta.patch"
           git apply --check "$RUNNER_TEMP/integration.patch" || { echo "::error::Maintained integration port does not apply (branch not stripped?)"; exit 1; }
           git apply "$RUNNER_TEMP/integration.patch"
           git apply --check "$RUNNER_TEMP/susfs-defconfig.patch" || { echo "::error::SUSFS defconfig patch does not apply"; exit 1; }
           git apply "$RUNNER_TEMP/susfs-defconfig.patch"
+          git apply --check "$RUNNER_TEMP/priority-uid-filter-hooks.patch" || { echo "::error::Priority uid filter hooks do not apply"; exit 1; }
+          git apply "$RUNNER_TEMP/priority-uid-filter-hooks.patch"
+          [ "$(grep -c 'susfs_is_priority_uid_filtered(uid.val)' kernel/sys.c)" = "2" ] || { echo "::error::Priority uid filter is not wired into getpriority/setpriority"; exit 1; }
+          [ "$(grep -c 'susfs_is_priority_uid_filtered(uid.val)' block/ioprio.c)" = "2" ] || { echo "::error::Priority uid filter is not wired into ioprio_get/set"; exit 1; }
+          grep -q '^CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER=y' arch/arm64/configs/vendor/a52sxq_kor_single_defconfig || { echo "::error::Priority uid filter missing from the vendor defconfig"; exit 1; }
           echo "SUSFS_TIP=${SUSFS_TIP}" >> $GITHUB_ENV
           echo "SUSFS_VER=${SUSFS_VER}" >> $GITHUB_ENV
           echo "SUSFS APPLIED: tip ${SUSFS_TIP} version ${SUSFS_VER}"
@@ -633,6 +693,10 @@ jobs:
               grep -n 'KSU_SUSFS' out/.config || true
               exit 1
             fi
+          fi
+          if [[ "${{ matrix.branch }}" == *susfs* ]]; then
+            grep -q '^CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER=y' out/.config \
+              || { echo "::error::${{ matrix.branch }} requires CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER=y but it is not set"; grep -n 'PRIORITY_UID_FILTER' out/.config || true; exit 1; }
           fi
           echo "SUSFS config check passed for branch ${{ matrix.branch }}"
 
