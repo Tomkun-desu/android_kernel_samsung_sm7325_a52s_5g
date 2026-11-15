@@ -396,6 +396,11 @@ jobs:
           git apply "$IF_PATCH"
           if [[ "${{ matrix.branch }}" == ksu-* ]]; then
             grep -q '^CONFIG_KSU_SUSFS=y' arch/arm64/configs/vendor/a52sxq_kor_single_defconfig || { echo "::error::ksu-* branch must bake CONFIG_KSU_SUSFS=y in the vendor defconfig"; exit 1; }
+            # midori/backslashxx default to no hook for built-in kernels; without one,
+            # sucompat and the ksud reboot magic never install and the manager reports
+            # "Failed to grant root" while GET_INFO still answers.
+            CFG=arch/arm64/configs/vendor/a52sxq_kor_single_defconfig
+            grep -q '^CONFIG_KSU_HACK_ARM64_BRANCH_LINK=y$' "$CFG" || echo 'CONFIG_KSU_HACK_ARM64_BRANCH_LINK=y' >> "$CFG"
           else
             git apply --check "$RUNNER_TEMP/susfs-defconfig.patch" || { echo "::error::SUSFS defconfig patch does not apply"; exit 1; }
             git apply "$RUNNER_TEMP/susfs-defconfig.patch"
@@ -785,6 +790,8 @@ jobs:
           if [[ "${{ matrix.branch }}" == ksu-* ]]; then
             grep -q '^CONFIG_KSU=y' out/.config \
               || { echo "::error::${{ matrix.branch }} requires CONFIG_KSU=y but it is not set"; grep -n '^CONFIG_KSU' out/.config || true; exit 1; }
+            grep -q '^CONFIG_KSU_HACK_ARM64_BRANCH_LINK=y' out/.config \
+              || { echo "::error::${{ matrix.branch }} requires a sucompat hook but CONFIG_KSU_HACK_ARM64_BRANCH_LINK is not set"; grep -n '^CONFIG_KSU' out/.config || true; exit 1; }
           fi
           echo "SUSFS config check passed for branch ${{ matrix.branch }}"
 
